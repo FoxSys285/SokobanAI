@@ -1,9 +1,18 @@
-import tkinter as tk
+import AI.a_star
+
 from PIL import Image, ImageTk, ImageDraw
+from objects.Map import Map
+import tkinter as tk
 import json
+import threading
 
 WINDOW_WIDTH = 1080
 WINDOW_HEIGHT = 640
+
+STEP = 0
+result = []
+result_lock = threading.Lock()
+game_locked = False
 
 root = tk.Tk()
 root.title("Sokoban - AI")
@@ -18,7 +27,7 @@ root.geometry(f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}+{SCREEN_WIDTH}+{SCREEN_HEIGHT}")
 def update_frame():
     
     # Lặp lại sau 16ms (tương đương ~60 FPS: 1000ms / 60 = 16.6)
-    root.after(16, update_frame)
+    root.after(8, update_frame)
 
 # Xử lí ảnh
 def load_image(path, witdh, height):
@@ -69,6 +78,35 @@ def on_exit_leave(event):
     menu.itemconfig("exit_button", fill="")
     menu.itemconfig("exit_text", fill="lightblue")
     menu.itemconfig("exit_button", outline="lightblue")
+    
+def check_win_condition():
+    """Kiểm tra điều kiện thắng"""
+    if current_base is None or current_obj is None:
+        return False
+    
+    # Tạo grid kết hợp base layer và object layer
+    grid = []
+    for r in range(len(current_base)):
+        row = []
+        for c in range(len(current_base[0])):
+            if current_obj[r][c] == 'player':
+                row.append(4)  # player
+            elif current_obj[r][c] == 'box':
+                if current_base[r][c] == 3:
+                    row.append(6)  # box on target
+                else:
+                    row.append(2)  # box on floor
+            elif current_base[r][c] == 1:
+                row.append(1)  # wall
+            elif current_base[r][c] == 3:
+                row.append(3)  # target
+            else:
+                row.append(0)  # floor
+        grid.append(row)
+    
+    # Tạo Map object và kiểm tra win
+    game_map = Map(game_level_index, grid)
+    return game_map.check_win()
 #================== KẾT THÚC CÁC HÀM HỖ TRỢ ==================#
 
 #================== FRAME MENU ==================#
@@ -131,6 +169,7 @@ menu_start.create_text(60, 40, text="Back", fill="lightblue", font=("Arial", 26)
 def on_back_click(event):
     menu_start.place_forget()  # Ẩn bảng chọn màn
     menu.place(x=0, y=0)  # Hiển thị lại menu chính
+   
     
 menu_start.tag_bind("back_button", "<Button-1>", on_back_click)
 menu_start.tag_bind("back_button", "<Enter>", lambda e: menu_start.itemconfig("back_button", fill="yellow"))
@@ -224,17 +263,18 @@ else:
 
 def play_game():
     menu_start.place_forget()  # Ẩn bảng chọn màn
-    # Initialize game state for the selected level and draw it
     init_game_state(current_index)
     render_game_map(current_index)
     game.place(x=0, y=0)  # Hiển thị frame game
+    
+    
 
 play_btn = tk.Button(menu_start, text = "Play", font=("Arial", 20, "bold"), bg="#FFC800", fg="white", command=play_game)
 play_btn.place(x=WINDOW_WIDTH // 2 - 100, y=preview_y + 270, width=200, height=50)
 #================== KẾT THÚC FRAME CHỌN MÀN ==================#
 
 #================== FRAME CREDITS ==================#
-
+#
 #================== KẾT THÚC FRAME CREDITS ==================#
 
 #================== FRAME GAME ==================#
@@ -247,13 +287,150 @@ game.create_rectangle(0, 0, 160, WINDOW_HEIGHT, fill="#3C68BA", outline="gray", 
 game.create_text(80, 40, text="SOKOBAN", fill="white", font=("Arial", 20, "bold"))
 
 game.create_text(80, 620, text="Back", fill="white", font=("Arial", 16, "bold"), tags="prev_text")
+
 def on_prev_click(event):
     game.place_forget()  # Ẩn frame game
     menu_start.place(x=0, y=0)
+    global STEP
+    global game_locked
+    # ensure input unlocked when leaving to menu
+    game_locked = False
+    STEP = 0
+    game.itemconfig("step_text", text=f"Steps: {STEP}")
     
 game.tag_bind("prev_text", "<Button-1>", on_prev_click)
 game.tag_bind("prev_text", "<Enter>", lambda e: game.itemconfig("prev_text", fill="yellow"))
 game.tag_bind("prev_text", "<Leave>", lambda e: game.itemconfig("prev_text", fill="white"))
+
+game.create_text(80, 200, text=f"Steps: {STEP}", fill="white", font=("Arial", 16), tags="step_text")
+
+def ai_move_up():
+    """AI movement - bypasses game_locked check"""
+    move_player(-1, 0)
+    global STEP
+    STEP += 1
+    game.itemconfig("step_text", text=f"Steps: {STEP}")
+    if check_win_condition():
+        win_effect()
+
+def ai_move_down():
+    """AI movement - bypasses game_locked check"""
+    move_player(1, 0)
+    global STEP
+    STEP += 1
+    game.itemconfig("step_text", text=f"Steps: {STEP}")
+    if check_win_condition():
+        win_effect()
+
+def ai_move_left():
+    """AI movement - bypasses game_locked check"""
+    move_player(0, -1)
+    global STEP
+    STEP += 1
+    game.itemconfig("step_text", text=f"Steps: {STEP}")
+    if check_win_condition():
+        win_effect()
+
+def ai_move_right():
+    """AI movement - bypasses game_locked check"""
+    move_player(0, 1)
+    global STEP
+    STEP += 1
+    game.itemconfig("step_text", text=f"Steps: {STEP}")
+    if check_win_condition():
+        win_effect()
+
+def ai_calculate_moves():
+    """Tính toán danh sách nước đi sử dụng thuật toán A*"""
+    if not maps_list or current_index >= len(maps_list):
+        print("Không có bản đồ để xử lý")
+        return []
+    
+    # Lấy map từ danh sách (maps_list chứa dictionaries từ JSON)
+    map_dict = maps_list[current_index]
+    grid = map_dict.get("grid", [])
+    
+    # Kiểm tra nếu grid rỗng
+    if not grid:
+        print("Grid trống, không thể tính toán")
+        return []
+    
+    # Gọi A* solver
+    solution = AI.a_star.solve_sokoban(grid)
+    
+    if solution is None:
+        print("Không tìm thấy giải pháp")
+        return []
+    
+    if not solution:
+        print("Bản đồ đã được giải quyết!")
+        return []
+    
+    # Chuyển đổi từ định dạng A* (UP, DOWN, LEFT, RIGHT) sang định dạng của game (U, D, L, R)
+    move_mapping = {
+        'UP': 'U',
+        'DOWN': 'D',
+        'LEFT': 'L',
+        'RIGHT': 'R'
+    }
+    
+    converted_moves = [move_mapping.get(move, move) for move in solution]
+    
+    print(f"AI tính toán {len(converted_moves)} nước đi")
+    return converted_moves
+
+def ai_move(moves=None, index=0):
+    """Thực hiện nước đi AI theo danh sách moves đã tính toán"""
+    global STEP
+    
+    # Nếu chưa có danh sách nước đi, tính toán lần đầu
+    if moves is None:
+        moves = ai_calculate_moves()
+        if not moves:
+            print("Không thể tính toán nước đi")
+            return
+        index = 0
+    
+    if index >= len(moves):
+        print("Hoàn thành mọi nước đi")
+        return
+    
+    direct = moves[index]
+    
+    if direct == 'U':
+        ai_move_up()
+    elif direct == 'D':
+        ai_move_down()
+    elif direct == 'L':
+        ai_move_left()
+    elif direct == 'R':
+        ai_move_right()
+        
+    root.after(300, lambda: ai_move(moves, index + 1))
+
+AI_PLAY_BTN = tk.Button(game, text="AI Play", font=("Arial", 16, "bold"), bg="#FFC800", fg="white", command=lambda: ai_move())
+AI_PLAY_BTN.place(x=20, y=130, width=120, height=40)
+
+up_btn = tk.Button(game, text="▲", font=("Arial", 18, "bold"), bg="white", fg="black", command=lambda: on_up())
+up_btn.place(x=60, y=480, width=40, height=40)
+down_btn = tk.Button(game, text="▼", font=("Arial", 18, "bold"), bg="white", fg="black", command=lambda: on_down())
+down_btn.place(x=60, y=530, width=40, height=40)
+left_btn = tk.Button(game, text="◀", font=("Arial", 16, "bold"), bg="white", fg="black", command=lambda: on_left())
+left_btn.place(x=10, y=530, width=40, height=40)
+right_btn = tk.Button(game, text="▶", font=("Arial", 16, "bold"), bg="white", fg="black", command=lambda: on_right())
+right_btn.place(x=110, y=530, width=40, height=40)
+
+def again():
+    global STEP
+    STEP = 0
+    game.itemconfig("step_text", text=f"Steps: {STEP}")
+    
+    init_game_state(current_index)
+    render_game_map(current_index)
+    
+
+again_btn = tk.Button(game, text="Again", font=("Arial", 16, "bold"), bg="#FFC800", fg="white", command=again)
+again_btn.place(x=20, y=80, width=120, height=40)
 #================== KẾT THÚC FRAME GAME ==================# 
 
 # ---------------- Map rendering on GAME frame ----------------
@@ -265,83 +442,6 @@ def clear_game_map():
     game.delete("map")
     game_image_objs = []
 
-def render_game_map(index):
-    """Render the `maps_list[index]` grid onto the `game` canvas using images from `assets`.
-    This draws tiles starting at a padded area to the right of the left sidebar.
-    """
-    clear_game_map()
-    if not maps_list:
-        return
-    index = index % len(maps_list)
-    m = maps_list[index]
-    grid = m.get("grid", [])
-    rows = len(grid)
-    cols = max((len(r) for r in grid), default=0)
-    if rows == 0 or cols == 0:
-        return
-
-    # define drawable area (leave sidebar 160px)
-    pad_left = 180
-    pad_top = 40
-    pad_right = 20
-    pad_bottom = 40
-    area_w = WINDOW_WIDTH - pad_left - pad_right
-    area_h = WINDOW_HEIGHT - pad_top - pad_bottom
-
-    # cell size chosen to fit the grid
-    cell = max(16, min(64, min(area_w // cols, area_h // rows)))
-
-    map_w = cols * cell
-    map_h = rows * cell
-    start_x = pad_left + (area_w - map_w) // 2
-    start_y = pad_top + (area_h - map_h) // 2
-
-    # load tile images scaled to `cell`
-    tile_paths = {
-        'floor': "assets/floor.png",
-        'wall': "assets/wall.png",
-        'box': "assets/box.png",
-        'box_target': "assets/box_in_target.png",
-        'target': "assets/target.png",
-        'player': "assets/player.png",
-    }
-
-    tiles = {}
-    for k, p in tile_paths.items():
-        img = load_image(p, cell, cell)
-        tiles[k] = img
-
-    # draw tiles: always draw floor first, then overlays
-    global game_image_objs
-    for r, row in enumerate(grid):
-        for c, val in enumerate(row):
-            x = start_x + c * cell
-            y = start_y + r * cell
-            # floor
-            floor_img = tiles.get('floor')
-            if floor_img:
-                iid = game.create_image(x, y, anchor=tk.NW, image=floor_img, tags=("map",))
-                game_image_objs.append(floor_img)
-
-            # overlay depending on cell value
-            # mapping based on preview colors: 0 floor,1 wall,2 box,3 target,4 player,6 box on target
-            if val == 1:
-                img = tiles.get('wall')
-            elif val == 2:
-                img = tiles.get('box')
-            elif val == 3:
-                img = tiles.get('target')
-            elif val == 4:
-                img = tiles.get('player')
-            elif val == 6:
-                img = tiles.get('box_target')
-            else:
-                img = None
-
-            if img:
-                iid = game.create_image(x, y, anchor=tk.NW, image=img, tags=("map",))
-                game_image_objs.append(img)
-
 # ---------------- end map rendering ----------------
 
 # ---------------- Game state & movement ----------------
@@ -350,6 +450,7 @@ game_level_index = None
 current_base = None
 current_obj = None
 player_pos = None
+game_locked = False
 
 def init_game_state(index):
     """Create current_base/current_obj/player_pos from maps_list[index]."""
@@ -550,18 +651,123 @@ def move_player(dr, dc):
     # re-render
     render_game_map(game_level_index)
 
+def win_effect():
+    game.update_idletasks() 
+    
+    # Lấy thông số chuẩn
+    w = game.winfo_width()
+    h = game.winfo_height()
+    x = game.winfo_rootx() # Dùng rootx để lấy tọa độ bên trong phần thân cửa sổ
+    y = game.winfo_rooty() # Dùng rooty để chính xác hơn root_y
+
+    overlay = tk.Toplevel(game)
+    overlay.grab_set()
+    # Áp dụng tọa độ chuẩn
+    overlay.geometry(f"{w}x{h}+{x}+{y}")
+    
+    overlay.overrideredirect(True)
+    overlay.configure(bg="black")
+    overlay.attributes("-alpha", 0.8)
+
+    # Đảm bảo overlay luôn nằm trên cùng
+    overlay.lift() 
+
+    global STEP, game_locked
+    # lock game input while overlay is active
+    game_locked = True
+    
+    win_label = tk.Label(overlay, text="CHIẾN THẮNG!", fg="yellow", bg="black", font=("Helvetica", 30, "bold"))
+    win_label.place(relx=0.5, rely=0.4, anchor=tk.CENTER)
+    
+    step_label = tk.Label(overlay, text=f"Steps: {STEP}", fg="white", bg="black", font=("Helvetica", 20, "bold"))
+    step_label.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
+    
+    def won():
+        global current_index, game_locked, STEP
+        
+        STEP = 0
+        game.itemconfig("step_text", text=f"Steps: {STEP}")
+        
+        overlay.destroy()
+        game_locked = False
+        current_index += 1
+        init_game_state(current_index)
+        render_game_map(current_index)
+    
+    def back_to_menu():
+        global current_index, STEP
+        
+        STEP = 0
+        game.itemconfig("step_text", text=f"Steps: {STEP}")
+        
+        overlay.destroy()
+        on_prev_click(None)
+        current_index = 0
+        show_level(current_index)        
+    
+    back_btn = tk.Button(overlay, text="Menu chính", command=back_to_menu, bg="#FFC800", fg="white", font=("Helvetica", 16, "bold"))
+    back_btn.place(x = 400, y = 350, width=120, height=40)
+
+    
+    btn = tk.Button(overlay, text="Chơi tiếp", command=won, bg="#FFC800", fg="white", font=("Helvetica", 16, "bold"))
+    btn.place(x = 580, y = 350, width=120, height=40)
+
 # movement button handlers
 def on_up():
+    global game_locked
+    if game_locked:
+        return
     move_player(-1, 0)
+    global STEP
+    STEP += 1
+    game.itemconfig("step_text", text=f"Steps: {STEP}")
+    up_btn.config(bg="yellow")
+    root.after(100, lambda: up_btn.config(bg="white"))
+    
+    if check_win_condition():
+        win_effect()
 
 def on_down():
+    global game_locked
+    if game_locked:
+        return
     move_player(1, 0)
+    global STEP
+    STEP += 1
+    game.itemconfig("step_text", text=f"Steps: {STEP}")
+    down_btn.config(bg="yellow")
+    root.after(100, lambda: down_btn.config(bg="white"))
+    
+    if check_win_condition():
+        win_effect()
 
 def on_left():
+    global game_locked
+    if game_locked:
+        return
     move_player(0, -1)
+    global STEP
+    STEP += 1
+    game.itemconfig("step_text", text=f"Steps: {STEP}")
+    left_btn.config(bg="yellow")
+    root.after(100, lambda: left_btn.config(bg="white"))
+    
+    if check_win_condition():
+        win_effect()
 
 def on_right():
+    global game_locked
+    if game_locked:
+        return
     move_player(0, 1)
+    global STEP
+    STEP += 1
+    game.itemconfig("step_text", text=f"Steps: {STEP}")
+    right_btn.config(bg="yellow")
+    root.after(100, lambda: right_btn.config(bg="white"))
+    
+    if check_win_condition():
+        win_effect()
 
 # keyboard bindings
 root.bind('<Up>', lambda e: on_up())
@@ -570,6 +776,7 @@ root.bind('<Left>', lambda e: on_left())
 root.bind('<Right>', lambda e: on_right())
 
 # ---------------- end game state & movement ----------------
+
 
 update_frame()
 root.mainloop()

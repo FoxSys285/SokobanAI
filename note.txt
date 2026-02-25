@@ -1,0 +1,15 @@
+Màn 1: 5
+Màn 2: 477
+Màn 3: 967
+Màn 4: 24
+Màn 5:
+Màn 6: 12678
+Màn 7:
+Màn 8:
+Màn 9:
+Màn 10:
+
+Vấn đề  AI gặp khó khăn trong việc: 
+- Xử lí các hộp được sắp xếp theo hình chữ T
+- Các màn chơi có các vật cản
+- Các màn có diện tích lớn
