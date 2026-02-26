@@ -305,7 +305,6 @@ game.tag_bind("prev_text", "<Leave>", lambda e: game.itemconfig("prev_text", fil
 game.create_text(80, 200, text=f"Steps: {STEP}", fill="white", font=("Arial", 16), tags="step_text")
 
 def ai_move_up():
-    """AI movement - bypasses game_locked check"""
     move_player(-1, 0)
     global STEP
     STEP += 1
@@ -314,7 +313,6 @@ def ai_move_up():
         win_effect()
 
 def ai_move_down():
-    """AI movement - bypasses game_locked check"""
     move_player(1, 0)
     global STEP
     STEP += 1
@@ -323,7 +321,6 @@ def ai_move_down():
         win_effect()
 
 def ai_move_left():
-    """AI movement - bypasses game_locked check"""
     move_player(0, -1)
     global STEP
     STEP += 1
@@ -332,7 +329,6 @@ def ai_move_left():
         win_effect()
 
 def ai_move_right():
-    """AI movement - bypasses game_locked check"""
     move_player(0, 1)
     global STEP
     STEP += 1
@@ -355,29 +351,112 @@ def ai_calculate_moves():
         print("Grid trống, không thể tính toán")
         return []
     
-    # Gọi A* solver
+    # Gọi A* solver (trả về danh sách push-actions)
     solution = AI.a_star.solve_sokoban(grid)
-    
+
     if solution is None:
         print("Không tìm thấy giải pháp")
         return []
-    
+
     if not solution:
         print("Bản đồ đã được giải quyết!")
         return []
-    
-    # Chuyển đổi từ định dạng A* (UP, DOWN, LEFT, RIGHT) sang định dạng của game (U, D, L, R)
-    move_mapping = {
-        'UP': 'U',
-        'DOWN': 'D',
-        'LEFT': 'L',
-        'RIGHT': 'R'
-    }
-    
-    converted_moves = [move_mapping.get(move, move) for move in solution]
-    
-    print(f"AI tính toán {len(converted_moves)} nước đi")
-    return converted_moves
+
+    # If solver already returned low-level moves (UP/DOWN/... or single-letter), use them
+    if all(isinstance(s, str) and s in ('UP','DOWN','LEFT','RIGHT') for s in solution):
+        move_map = {'UP':'U','DOWN':'D','LEFT':'L','RIGHT':'R'}
+        converted = [move_map[s] for s in solution]
+        print(f"AI tính toán {len(converted)} nước đi")
+        return converted
+    if all(isinstance(s, str) and s in ('U','D','L','R') for s in solution):
+        print(f"AI tính toán {len(solution)} nước đi")
+        return list(solution)
+
+    # Chuẩn bị dữ liệu: vị trí player, boxes, walls
+    player = None
+    boxes = set()
+    walls = set()
+    rows = len(grid)
+    cols = len(grid[0])
+    for r in range(rows):
+        for c in range(cols):
+            val = grid[r][c]
+            if val == 4:
+                player = (r, c)
+            if val == 2:
+                boxes.add((r, c))
+            if val == 1:
+                walls.add((r, c))
+
+    # helper: BFS to find path of single-tile moves from src to dst avoiding walls and boxes
+    from collections import deque as _deque
+    dir_map = {'UP': (-1, 0), 'DOWN': (1, 0), 'LEFT': (0, -1), 'RIGHT': (0, 1)}
+    rev_map = {(-1,0): 'U', (1,0): 'D', (0,-1): 'L', (0,1): 'R'}
+
+    def bfs_path(src, dst, boxes_set):
+        if src == dst:
+            return []
+        q = _deque([src])
+        prev = {src: None}
+        while q:
+            cur = q.popleft()
+            for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+                nxt = (cur[0]+dr, cur[1]+dc)
+                if (0 <= nxt[0] < rows and 0 <= nxt[1] < cols and
+                        nxt not in prev and nxt not in walls and nxt not in boxes_set):
+                    prev[nxt] = cur
+                    if nxt == dst:
+                        # reconstruct
+                        path = []
+                        node = dst
+                        while prev[node] is not None:
+                            p = prev[node]
+                            step = (node[0]-p[0], node[1]-p[1])
+                            path.append(rev_map[step])
+                            node = p
+                        return list(reversed(path))
+                    q.append(nxt)
+        return None
+
+    # Convert push-actions into low-level moves (walks + single push)
+    final_moves = []
+    for push in solution:
+        dr, dc = dir_map[push]
+        # find candidate boxes that can be pushed in this direction
+        candidates = []
+        for b in list(boxes):
+            player_needed = (b[0]-dr, b[1]-dc)
+            box_target = (b[0]+dr, b[1]+dc)
+            # target must be inside bounds and not a wall and not occupied by another box
+            if not (0 <= box_target[0] < rows and 0 <= box_target[1] < cols):
+                continue
+            if box_target in walls or box_target in boxes:
+                continue
+            # player_needed must be reachable (via BFS avoiding boxes)
+            path_to_needed = bfs_path(player, player_needed, boxes)
+            if path_to_needed is not None:
+                candidates.append((len(path_to_needed), b, player_needed, box_target, path_to_needed))
+
+        if not candidates:
+            print(f"Không tìm thấy hộp để đẩy theo hướng {push}")
+            return []
+
+        # choose nearest candidate by path length
+        candidates.sort(key=lambda x: x[0])
+        _, box_chosen, player_needed, box_target, path_to_needed = candidates[0]
+
+        # append walk moves to reach player_needed
+        final_moves.extend(path_to_needed)
+        # append the push move (single tile)
+        final_moves.append({'UP':'U','DOWN':'D','LEFT':'L','RIGHT':'R'}[push])
+
+        # simulate the push: update boxes and player position
+        boxes.remove(box_chosen)
+        boxes.add(box_target)
+        player = box_chosen  # player stands on old box position after push
+
+    print(f"AI tính toán {len(final_moves)} nước đi (đã mở rộng)")
+    return final_moves
 
 def ai_move(moves=None, index=0):
     """Thực hiện nước đi AI theo danh sách moves đã tính toán"""
